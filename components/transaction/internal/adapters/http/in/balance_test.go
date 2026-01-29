@@ -1519,7 +1519,7 @@ func TestBalanceHandler_GetBalanceAtTimestamp(t *testing.T) {
 			name: "no balance data at date returns 404",
 			date: "2024-01-15T10:30:00Z",
 			setupMocks: func(balanceRepo *balance.MockRepository, operationRepo *operation.MockRepository, orgID, ledgerID, balanceID uuid.UUID, date time.Time) {
-				// Balance exists
+				// Balance exists but was created AFTER the query date
 				balanceRepo.EXPECT().
 					Find(gomock.Any(), orgID, ledgerID, balanceID).
 					Return(&mmodel.Balance{
@@ -1530,10 +1530,11 @@ func TestBalanceHandler_GetBalanceAtTimestamp(t *testing.T) {
 						Alias:          "@user1",
 						Key:            "default",
 						AssetCode:      "USD",
+						CreatedAt:      date.Add(24 * time.Hour), // Balance created AFTER query date
 					}, nil).
 					Times(1)
 
-				// But no operation found before date
+				// No operation found before date (implementation checks this before CreatedAt)
 				operationRepo.EXPECT().
 					FindLastOperationBeforeTimestamp(gomock.Any(), orgID, ledgerID, balanceID, gomock.Any()).
 					Return(nil, nil).
@@ -1675,9 +1676,9 @@ func TestBalanceHandler_GetAccountBalancesAtTimestamp(t *testing.T) {
 					}, libHTTP.CursorPagination{}, nil).
 					Times(1)
 
-				// Then get current balances for metadata
+				// Then get all balances for account
 				balanceRepo.EXPECT().
-					ListByIDs(gomock.Any(), orgID, ledgerID, []uuid.UUID{balanceID}).
+					ListByAccountID(gomock.Any(), orgID, ledgerID, accountID).
 					Return([]*mmodel.Balance{
 						{
 							ID:             balanceID.String(),
@@ -1773,6 +1774,12 @@ func TestBalanceHandler_GetAccountBalancesAtTimestamp(t *testing.T) {
 					FindLastOperationsForAccountBeforeTimestamp(gomock.Any(), orgID, ledgerID, accountID, gomock.Any(), gomock.Any()).
 					Return([]*operation.Operation{}, libHTTP.CursorPagination{}, nil).
 					Times(1)
+
+				// No balances exist for account (or all created after query date)
+				balanceRepo.EXPECT().
+					ListByAccountID(gomock.Any(), orgID, ledgerID, accountID).
+					Return([]*mmodel.Balance{}, nil).
+					Times(1)
 			},
 			expectedStatus: 404,
 			validateBody: func(t *testing.T, body []byte) {
@@ -1811,34 +1818,15 @@ func TestBalanceHandler_GetAccountBalancesAtTimestamp(t *testing.T) {
 			name: "balance repository error returns 500",
 			date: "2024-01-15T10:30:00Z",
 			setupMocks: func(balanceRepo *balance.MockRepository, operationRepo *operation.MockRepository, orgID, ledgerID, accountID uuid.UUID, date time.Time) {
-				balanceID := uuid.New()
-				available := decimal.NewFromInt(5000)
-				onHold := decimal.NewFromInt(500)
-				version := int64(10)
-
 				// Operations found
 				operationRepo.EXPECT().
 					FindLastOperationsForAccountBeforeTimestamp(gomock.Any(), orgID, ledgerID, accountID, gomock.Any(), gomock.Any()).
-					Return([]*operation.Operation{
-						{
-							ID:         uuid.New().String(),
-							AccountID:  accountID.String(),
-							BalanceID:  balanceID.String(),
-							BalanceKey: "default",
-							AssetCode:  "USD",
-							BalanceAfter: operation.Balance{
-								Available: &available,
-								OnHold:    &onHold,
-								Version:   &version,
-							},
-							CreatedAt: time.Now().Add(-time.Hour),
-						},
-					}, libHTTP.CursorPagination{}, nil).
+					Return([]*operation.Operation{}, libHTTP.CursorPagination{}, nil).
 					Times(1)
 
 				// But balance repo fails
 				balanceRepo.EXPECT().
-					ListByIDs(gomock.Any(), orgID, ledgerID, []uuid.UUID{balanceID}).
+					ListByAccountID(gomock.Any(), orgID, ledgerID, accountID).
 					Return(nil, pkg.InternalServerError{
 						Code:    "0046",
 						Title:   "Internal Server Error",
@@ -1902,9 +1890,9 @@ func TestBalanceHandler_GetAccountBalancesAtTimestamp(t *testing.T) {
 					}, libHTTP.CursorPagination{}, nil).
 					Times(1)
 
-				// Then get current balances for metadata
+				// Then get all balances for account
 				balanceRepo.EXPECT().
-					ListByIDs(gomock.Any(), orgID, ledgerID, gomock.Any()).
+					ListByAccountID(gomock.Any(), orgID, ledgerID, accountID).
 					Return([]*mmodel.Balance{
 						{
 							ID:             balanceID1.String(),
@@ -1982,9 +1970,9 @@ func TestBalanceHandler_GetAccountBalancesAtTimestamp(t *testing.T) {
 					}, libHTTP.CursorPagination{Next: "next-cursor", Prev: "prev-cursor"}, nil).
 					Times(1)
 
-				// Then get current balances for metadata
+				// Then get all balances for account
 				balanceRepo.EXPECT().
-					ListByIDs(gomock.Any(), orgID, ledgerID, []uuid.UUID{balanceID}).
+					ListByAccountID(gomock.Any(), orgID, ledgerID, accountID).
 					Return([]*mmodel.Balance{
 						{
 							ID:             balanceID.String(),
