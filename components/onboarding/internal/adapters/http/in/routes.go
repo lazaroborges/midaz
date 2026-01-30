@@ -96,6 +96,7 @@ func RegisterRoutesToApp(f *fiber.App, auth *middleware.AuthClient, ah *AccountH
 
 	// Accounts
 	f.Post("/v1/organizations/:organization_id/ledgers/:ledger_id/accounts", auth.Authorize(midazName, "accounts", "post"), http.ParseUUIDPathParameters("account"), http.WithBody(new(mmodel.CreateAccountInput), ah.CreateAccount))
+	f.Post("/v1/organizations/:organization_id/ledgers/:ledger_id/accounts/batch", auth.Authorize(midazName, "accounts", "post"), http.ParseUUIDPathParameters("account"), http.WithBody(new(mmodel.CreateAccountBatchRequest), ah.CreateAccountsBatch))
 	f.Patch("/v1/organizations/:organization_id/ledgers/:ledger_id/accounts/:id", auth.Authorize(midazName, "accounts", "patch"), http.ParseUUIDPathParameters("account"), http.WithBody(new(mmodel.UpdateAccountInput), ah.UpdateAccount))
 	f.Get("/v1/organizations/:organization_id/ledgers/:ledger_id/accounts", auth.Authorize(midazName, "accounts", "get"), http.ParseUUIDPathParameters("account"), ah.GetAllAccounts)
 	f.Get("/v1/organizations/:organization_id/ledgers/:ledger_id/accounts/:id", auth.Authorize(midazName, "accounts", "get"), http.ParseUUIDPathParameters("account"), ah.GetAccountByID)

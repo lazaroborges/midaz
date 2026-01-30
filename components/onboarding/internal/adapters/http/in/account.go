@@ -84,6 +84,71 @@ func (handler *AccountHandler) CreateAccount(i any, c *fiber.Ctx) error {
 	return http.Created(c, account)
 }
 
+// CreateAccountsBatch is a method that creates multiple accounts in a single batch operation.
+//
+//	@Summary		Create multiple accounts in batch
+//	@Description	Creates multiple accounts within the specified ledger in a single batch operation. Supports atomic mode (all-or-nothing) or partial mode (independent operations).
+//	@Tags			Accounts
+//	@Accept			json
+//	@Produce		json
+//	@Param			Authorization	header		string								true	"Authorization Bearer Token with format: Bearer {token}"
+//	@Param			X-Request-Id	header		string								false	"Request ID for tracing"
+//	@Param			organization_id	path		string								true	"Organization ID in UUID format"
+//	@Param			ledger_id		path		string								true	"Ledger ID in UUID format"
+//	@Param			request			body		mmodel.CreateAccountBatchRequest	true	"Batch account creation request with atomic flag and array of account details"
+//	@Success		201				{object}	mmodel.CreateAccountBatchResponse	"All accounts successfully created"
+//	@Success		207				{object}	mmodel.CreateAccountBatchResponse	"Partial success - some accounts created, some failed"
+//	@Failure		400				{object}	mmodel.Error						"Invalid input, validation errors"
+//	@Failure		401				{object}	mmodel.Error						"Unauthorized access"
+//	@Failure		403				{object}	mmodel.Error						"Forbidden access"
+//	@Failure		404				{object}	mmodel.Error						"Organization or ledger not found"
+//	@Failure		500				{object}	mmodel.Error						"Internal server error"
+//	@Router			/v1/organizations/{organization_id}/ledgers/{ledger_id}/accounts/batch [post]
+func (handler *AccountHandler) CreateAccountsBatch(i any, c *fiber.Ctx) error {
+	ctx := c.UserContext()
+
+	logger, tracer, _, metricFactory := libCommons.NewTrackingFromContext(ctx)
+
+	organizationID := c.Locals("organization_id").(uuid.UUID)
+	ledgerID := c.Locals("ledger_id").(uuid.UUID)
+
+	payload := i.(*mmodel.CreateAccountBatchRequest)
+	logger.Infof("Request to create %d Accounts in batch (atomic=%v)", len(payload.Accounts), payload.Atomic)
+
+	ctx, span := tracer.Start(ctx, "handler.create_accounts_batch")
+	defer span.End()
+
+	err := libOpentelemetry.SetSpanAttributesFromStruct(&span, "app.request.payload", payload)
+	if err != nil {
+		libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "Failed to convert payload to JSON string", err)
+
+		return http.WithError(c, err)
+	}
+
+	token := c.Get("Authorization")
+
+	response, err := handler.Command.CreateAccountsBatch(ctx, organizationID, ledgerID, payload, token)
+	if err != nil {
+		libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "Failed to create Accounts batch on command", err)
+
+		return http.WithError(c, err)
+	}
+
+	// Record metrics for successful creations
+	for i := 0; i < response.SuccessCount; i++ {
+		metricFactory.RecordAccountCreated(ctx, organizationID.String(), ledgerID.String())
+	}
+
+	logger.Infof("Batch account creation completed: %d succeeded, %d failed", response.SuccessCount, response.FailureCount)
+
+	// Return 201 if all succeeded, 207 if partial success
+	if response.FailureCount > 0 {
+		return http.MultiStatus(c, response)
+	}
+
+	return http.Created(c, response)
+}
+
 // GetAllAccounts is a method that retrieves all Accounts.
 //
 //	@Summary		List all accounts

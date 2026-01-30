@@ -236,3 +236,33 @@ func (mr *MockRepositoryMockRecorder) Count(ctx, organizationID, ledgerID any) *
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Count", reflect.TypeOf((*MockRepository)(nil).Count), ctx, organizationID, ledgerID)
 }
+
+// CreateBatch mocks base method.
+func (m *MockRepository) CreateBatch(ctx context.Context, accounts []*mmodel.Account) ([]*mmodel.Account, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CreateBatch", ctx, accounts)
+	ret0, _ := ret[0].([]*mmodel.Account)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// CreateBatch indicates an expected call of CreateBatch.
+func (mr *MockRepositoryMockRecorder) CreateBatch(ctx, accounts any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CreateBatch", reflect.TypeOf((*MockRepository)(nil).CreateBatch), ctx, accounts)
+}
+
+// FindByAliases mocks base method.
+func (m *MockRepository) FindByAliases(ctx context.Context, organizationID, ledgerID uuid.UUID, aliases []string) ([]string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "FindByAliases", ctx, organizationID, ledgerID, aliases)
+	ret0, _ := ret[0].([]string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// FindByAliases indicates an expected call of FindByAliases.
+func (mr *MockRepositoryMockRecorder) FindByAliases(ctx, organizationID, ledgerID, aliases any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindByAliases", reflect.TypeOf((*MockRepository)(nil).FindByAliases), ctx, organizationID, ledgerID, aliases)
+}

@@ -38,7 +38,7 @@ scripts/demo-data/sdk-source/
 
 # Other
 postman/backups
-
 .windsurfrules
 cert/
 .mcp.json
+data/

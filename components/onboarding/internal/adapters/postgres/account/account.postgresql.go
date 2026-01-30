@@ -46,11 +46,13 @@ var accountColumnList = []string{
 // It defines methods for creating, retrieving, updating, and deleting accounts in the database.
 type Repository interface {
 	Create(ctx context.Context, acc *mmodel.Account) (*mmodel.Account, error)
+	CreateBatch(ctx context.Context, accounts []*mmodel.Account) ([]*mmodel.Account, error)
 	FindAll(ctx context.Context, organizationID, ledgerID uuid.UUID, portfolioID *uuid.UUID, filter http.Pagination) ([]*mmodel.Account, error)
 	Find(ctx context.Context, organizationID, ledgerID uuid.UUID, portfolioID *uuid.UUID, id uuid.UUID) (*mmodel.Account, error)
 	FindWithDeleted(ctx context.Context, organizationID, ledgerID uuid.UUID, portfolioID *uuid.UUID, id uuid.UUID) (*mmodel.Account, error)
 	FindAlias(ctx context.Context, organizationID, ledgerID uuid.UUID, portfolioID *uuid.UUID, alias string) (*mmodel.Account, error)
 	FindByAlias(ctx context.Context, organizationID, ledgerID uuid.UUID, alias string) (bool, error)
+	FindByAliases(ctx context.Context, organizationID, ledgerID uuid.UUID, aliases []string) ([]string, error)
 	ListByIDs(ctx context.Context, organizationID, ledgerID uuid.UUID, portfolioID *uuid.UUID, ids []uuid.UUID) ([]*mmodel.Account, error)
 	ListByAlias(ctx context.Context, organizationID, ledgerID, portfolioID uuid.UUID, alias []string) ([]*mmodel.Account, error)
 	Update(ctx context.Context, organizationID, ledgerID uuid.UUID, portfolioID *uuid.UUID, id uuid.UUID, acc *mmodel.Account) (*mmodel.Account, error)
@@ -1206,4 +1208,209 @@ func (r *AccountPostgreSQLRepository) Count(ctx context.Context, organizationID,
 	spanQuery.End()
 
 	return count, nil
+}
+
+// CreateBatch creates multiple account entities in Postgresql using a multi-row insert.
+// All accounts are inserted in a single query for efficiency.
+func (r *AccountPostgreSQLRepository) CreateBatch(ctx context.Context, accounts []*mmodel.Account) ([]*mmodel.Account, error) {
+	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+
+	ctx, span := tracer.Start(ctx, "postgres.create_accounts_batch")
+	defer span.End()
+
+	if len(accounts) == 0 {
+		return []*mmodel.Account{}, nil
+	}
+
+	db, err := r.connection.GetDB()
+	if err != nil {
+		libOpentelemetry.HandleSpanError(&span, "Failed to get database connection", err)
+
+		logger.Errorf("Failed to get database connection: %v", err)
+
+		return nil, err
+	}
+
+	builder := squirrel.Insert(r.tableName).
+		Columns(
+			"id",
+			"name",
+			"parent_account_id",
+			"entity_id",
+			"asset_code",
+			"organization_id",
+			"ledger_id",
+			"portfolio_id",
+			"segment_id",
+			"status",
+			"status_description",
+			"alias",
+			"type",
+			"created_at",
+			"updated_at",
+			"deleted_at",
+			"blocked",
+		)
+
+	// Add values for each account
+	for _, acc := range accounts {
+		record := &AccountPostgreSQLModel{}
+		record.FromEntity(acc)
+
+		builder = builder.Values(
+			record.ID,
+			record.Name,
+			record.ParentAccountID,
+			record.EntityID,
+			record.AssetCode,
+			record.OrganizationID,
+			record.LedgerID,
+			record.PortfolioID,
+			record.SegmentID,
+			record.Status,
+			record.StatusDescription,
+			record.Alias,
+			record.Type,
+			record.CreatedAt,
+			record.UpdatedAt,
+			record.DeletedAt,
+			record.Blocked,
+		)
+	}
+
+	builder = builder.PlaceholderFormat(squirrel.Dollar)
+
+	query, args, err := builder.ToSql()
+	if err != nil {
+		libOpentelemetry.HandleSpanError(&span, "Failed to build query", err)
+
+		logger.Errorf("Failed to build query: %v", err)
+
+		return nil, err
+	}
+
+	ctx, spanExec := tracer.Start(ctx, "postgres.create_batch.exec")
+
+	result, err := db.ExecContext(ctx, query, args...)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) {
+			err := services.ValidatePGError(pgErr, reflect.TypeOf(mmodel.Account{}).Name())
+
+			libOpentelemetry.HandleSpanBusinessErrorEvent(&spanExec, "Failed to execute batch insert query", err)
+
+			logger.Errorf("Failed to execute batch insert query: %v", err)
+
+			return nil, err
+		}
+
+		libOpentelemetry.HandleSpanError(&spanExec, "Failed to execute batch insert query", err)
+
+		logger.Errorf("Failed to execute batch insert query: %v", err)
+
+		return nil, err
+	}
+
+	spanExec.End()
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		libOpentelemetry.HandleSpanError(&span, "Failed to get rows affected", err)
+
+		logger.Errorf("Failed to get rows affected: %v", err)
+
+		return nil, err
+	}
+
+	if rowsAffected != int64(len(accounts)) {
+		err := pkg.ValidateBusinessError(constant.ErrEntityNotFound, reflect.TypeOf(mmodel.Account{}).Name())
+
+		libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "Failed to create all accounts in batch", err)
+
+		logger.Warnf("Failed to create all accounts in batch: expected %d, got %d", len(accounts), rowsAffected)
+
+		return nil, err
+	}
+
+	logger.Infof("Successfully created %d accounts in batch", rowsAffected)
+
+	return accounts, nil
+}
+
+// FindByAliases checks if any of the given aliases already exist in the database.
+// Returns a slice of aliases that are already taken.
+func (r *AccountPostgreSQLRepository) FindByAliases(ctx context.Context, organizationID, ledgerID uuid.UUID, aliases []string) ([]string, error) {
+	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+
+	ctx, span := tracer.Start(ctx, "postgres.find_by_aliases")
+	defer span.End()
+
+	if len(aliases) == 0 {
+		return []string{}, nil
+	}
+
+	db, err := r.connection.GetDB()
+	if err != nil {
+		libOpentelemetry.HandleSpanError(&span, "Failed to get database connection", err)
+
+		logger.Errorf("Failed to get database connection: %v", err)
+
+		return nil, err
+	}
+
+	builder := squirrel.Select("alias").
+		From(r.tableName).
+		Where(squirrel.Eq{"organization_id": organizationID}).
+		Where(squirrel.Eq{"ledger_id": ledgerID}).
+		Where(squirrel.Eq{"alias": aliases}).
+		Where(squirrel.Expr("deleted_at IS NULL")).
+		PlaceholderFormat(squirrel.Dollar)
+
+	query, args, err := builder.ToSql()
+	if err != nil {
+		libOpentelemetry.HandleSpanError(&span, "Failed to build query", err)
+
+		logger.Errorf("Failed to build query: %v", err)
+
+		return nil, err
+	}
+
+	ctx, spanQuery := tracer.Start(ctx, "postgres.find_by_aliases.query")
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		libOpentelemetry.HandleSpanError(&spanQuery, "Failed to execute query", err)
+
+		logger.Errorf("Failed to execute query: %v", err)
+
+		return nil, err
+	}
+	defer rows.Close()
+
+	spanQuery.End()
+
+	var existingAliases []string
+
+	for rows.Next() {
+		var alias string
+		if err := rows.Scan(&alias); err != nil {
+			libOpentelemetry.HandleSpanError(&span, "Failed to scan row", err)
+
+			logger.Errorf("Failed to scan row: %v", err)
+
+			return nil, err
+		}
+
+		existingAliases = append(existingAliases, alias)
+	}
+
+	if err := rows.Err(); err != nil {
+		libOpentelemetry.HandleSpanError(&span, "Failed to iterate rows", err)
+
+		logger.Errorf("Failed to iterate rows: %v", err)
+
+		return nil, err
+	}
+
+	return existingAliases, nil
 }

@@ -1,10 +1,11 @@
 package http
 
 import (
-	"github.com/LerianStudio/midaz/v3/pkg"
-	"github.com/gofiber/fiber/v2"
 	"net/http"
 	"strconv"
+
+	"github.com/LerianStudio/midaz/v3/pkg"
+	"github.com/gofiber/fiber/v2"
 )
 
 // Unauthorized sends an HTTP 401 Unauthorized response with a custom code, title and message.
@@ -53,6 +54,12 @@ func Accepted(c *fiber.Ctx, s any) error {
 // PartialContent sends an HTTP 206 Partial Content response with a custom body.
 func PartialContent(c *fiber.Ctx, s any) error {
 	return c.Status(http.StatusPartialContent).JSON(s)
+}
+
+// MultiStatus sends an HTTP 207 Multi-Status response with a custom body.
+// Used for batch operations where some items succeed and some fail.
+func MultiStatus(c *fiber.Ctx, s any) error {
+	return c.Status(http.StatusMultiStatus).JSON(s)
 }
 
 // RangeNotSatisfiable sends an HTTP 416 Requested Range Not Satisfiable response.

@@ -1148,7 +1148,7 @@ func TestIntegration_AccountRepository_Count_Scenarios(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Arrange
 			container := pgtestutil.SetupContainer(t)
-		
+
 			repo := createRepository(t, container)
 
 			orgID := pgtestutil.CreateTestOrganization(t, container.DB)
@@ -1209,4 +1209,277 @@ func TestIntegration_AccountRepository_Count_IsolatesByOrgLedger(t *testing.T) {
 	require.NoError(t, err2)
 	assert.Equal(t, int64(3), count1, "org1 should have 3 accounts")
 	assert.Equal(t, int64(1), count2, "org2 should have 1 account")
+}
+
+// ============================================================================
+// CreateBatch Tests
+// ============================================================================
+
+func TestIntegration_AccountRepository_CreateBatch_InsertsMultipleAccounts(t *testing.T) {
+	// Arrange
+	container := pgtestutil.SetupContainer(t)
+
+	repo := createRepository(t, container)
+
+	orgID := pgtestutil.CreateTestOrganization(t, container.DB)
+	ledgerID := pgtestutil.CreateTestLedger(t, container.DB, orgID)
+
+	ctx := context.Background()
+
+	alias1 := fmt.Sprintf("@batch1-%s", libCommons.GenerateUUIDv7().String()[:8])
+	alias2 := fmt.Sprintf("@batch2-%s", libCommons.GenerateUUIDv7().String()[:8])
+	alias3 := fmt.Sprintf("@batch3-%s", libCommons.GenerateUUIDv7().String()[:8])
+	blocked := false
+	now := time.Now().Truncate(time.Microsecond)
+
+	accounts := []*mmodel.Account{
+		{
+			ID:             libCommons.GenerateUUIDv7().String(),
+			Name:           "Batch Account 1",
+			AssetCode:      "USD",
+			OrganizationID: orgID.String(),
+			LedgerID:       ledgerID.String(),
+			Status:         mmodel.Status{Code: "ACTIVE"},
+			Alias:          &alias1,
+			Type:           "deposit",
+			Blocked:        &blocked,
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		},
+		{
+			ID:             libCommons.GenerateUUIDv7().String(),
+			Name:           "Batch Account 2",
+			AssetCode:      "EUR",
+			OrganizationID: orgID.String(),
+			LedgerID:       ledgerID.String(),
+			Status:         mmodel.Status{Code: "ACTIVE"},
+			Alias:          &alias2,
+			Type:           "savings",
+			Blocked:        &blocked,
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		},
+		{
+			ID:             libCommons.GenerateUUIDv7().String(),
+			Name:           "Batch Account 3",
+			AssetCode:      "BRL",
+			OrganizationID: orgID.String(),
+			LedgerID:       ledgerID.String(),
+			Status:         mmodel.Status{Code: "ACTIVE"},
+			Alias:          &alias3,
+			Type:           "checking",
+			Blocked:        &blocked,
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		},
+	}
+
+	// Act
+	created, err := repo.CreateBatch(ctx, accounts)
+
+	// Assert
+	require.NoError(t, err, "CreateBatch should not return error")
+	require.NotNil(t, created, "created accounts should not be nil")
+	assert.Len(t, created, 3, "should return 3 created accounts")
+
+	// Verify all accounts can be retrieved
+	for i, acc := range created {
+		parsedID, _ := uuid.Parse(acc.ID)
+		found, err := repo.Find(ctx, orgID, ledgerID, nil, parsedID)
+		require.NoError(t, err, "should find account %d", i)
+		assert.Equal(t, acc.Name, found.Name)
+		assert.Equal(t, acc.AssetCode, found.AssetCode)
+	}
+
+	// Verify count
+	count, err := repo.Count(ctx, orgID, ledgerID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), count, "should have 3 accounts")
+}
+
+func TestIntegration_AccountRepository_CreateBatch_EmptySlice(t *testing.T) {
+	// Arrange
+	container := pgtestutil.SetupContainer(t)
+
+	repo := createRepository(t, container)
+
+	ctx := context.Background()
+
+	// Act
+	created, err := repo.CreateBatch(ctx, []*mmodel.Account{})
+
+	// Assert
+	require.NoError(t, err, "CreateBatch with empty slice should not error")
+	assert.Empty(t, created, "should return empty slice")
+}
+
+func TestIntegration_AccountRepository_CreateBatch_FailsOnDuplicateAlias(t *testing.T) {
+	// Arrange
+	container := pgtestutil.SetupContainer(t)
+
+	repo := createRepository(t, container)
+
+	orgID := pgtestutil.CreateTestOrganization(t, container.DB)
+	ledgerID := pgtestutil.CreateTestLedger(t, container.DB, orgID)
+
+	ctx := context.Background()
+
+	// Create an existing account with an alias
+	existingAlias := fmt.Sprintf("@existing-%s", libCommons.GenerateUUIDv7().String()[:8])
+	pgtestutil.CreateTestAccount(t, container.DB, orgID, ledgerID, nil, "Existing Account", existingAlias, "USD", nil)
+
+	blocked := false
+	now := time.Now().Truncate(time.Microsecond)
+
+	// Try to create batch with duplicate alias
+	accounts := []*mmodel.Account{
+		{
+			ID:             libCommons.GenerateUUIDv7().String(),
+			Name:           "New Account",
+			AssetCode:      "USD",
+			OrganizationID: orgID.String(),
+			LedgerID:       ledgerID.String(),
+			Status:         mmodel.Status{Code: "ACTIVE"},
+			Alias:          &existingAlias, // Duplicate alias
+			Type:           "deposit",
+			Blocked:        &blocked,
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		},
+	}
+
+	// Act
+	_, err := repo.CreateBatch(ctx, accounts)
+
+	// Assert
+	require.Error(t, err, "CreateBatch should fail on duplicate alias")
+}
+
+// ============================================================================
+// FindByAliases Tests
+// ============================================================================
+
+func TestIntegration_AccountRepository_FindByAliases_ReturnsExistingAliases(t *testing.T) {
+	// Arrange
+	container := pgtestutil.SetupContainer(t)
+
+	repo := createRepository(t, container)
+
+	orgID := pgtestutil.CreateTestOrganization(t, container.DB)
+	ledgerID := pgtestutil.CreateTestLedger(t, container.DB, orgID)
+
+	// Create accounts with known aliases
+	alias1 := "@findaliases1"
+	alias2 := "@findaliases2"
+	alias3 := "@findaliases3"
+	pgtestutil.CreateTestAccount(t, container.DB, orgID, ledgerID, nil, "Account 1", alias1, "USD", nil)
+	pgtestutil.CreateTestAccount(t, container.DB, orgID, ledgerID, nil, "Account 2", alias2, "USD", nil)
+	pgtestutil.CreateTestAccount(t, container.DB, orgID, ledgerID, nil, "Account 3", alias3, "USD", nil)
+
+	ctx := context.Background()
+
+	// Act - Check for existing and non-existing aliases
+	existingAliases, err := repo.FindByAliases(ctx, orgID, ledgerID, []string{alias1, alias2, "@nonexistent"})
+
+	// Assert
+	require.NoError(t, err, "FindByAliases should not return error")
+	assert.Len(t, existingAliases, 2, "should return 2 existing aliases")
+	assert.Contains(t, existingAliases, alias1)
+	assert.Contains(t, existingAliases, alias2)
+	assert.NotContains(t, existingAliases, "@nonexistent")
+}
+
+func TestIntegration_AccountRepository_FindByAliases_ReturnsEmptyForNoMatch(t *testing.T) {
+	// Arrange
+	container := pgtestutil.SetupContainer(t)
+
+	repo := createRepository(t, container)
+
+	orgID := pgtestutil.CreateTestOrganization(t, container.DB)
+	ledgerID := pgtestutil.CreateTestLedger(t, container.DB, orgID)
+
+	ctx := context.Background()
+
+	// Act
+	existingAliases, err := repo.FindByAliases(ctx, orgID, ledgerID, []string{"@nonexistent1", "@nonexistent2"})
+
+	// Assert
+	require.NoError(t, err, "FindByAliases should not return error")
+	assert.Empty(t, existingAliases, "should return empty slice when no aliases exist")
+}
+
+func TestIntegration_AccountRepository_FindByAliases_ExcludesSoftDeleted(t *testing.T) {
+	// Arrange
+	container := pgtestutil.SetupContainer(t)
+
+	repo := createRepository(t, container)
+
+	orgID := pgtestutil.CreateTestOrganization(t, container.DB)
+	ledgerID := pgtestutil.CreateTestLedger(t, container.DB, orgID)
+
+	// Create one active and one soft-deleted account
+	activeAlias := "@activealiascheck"
+	deletedAlias := "@deletedaliascheck"
+	pgtestutil.CreateTestAccount(t, container.DB, orgID, ledgerID, nil, "Active Account", activeAlias, "USD", nil)
+	deletedAt := time.Now()
+	pgtestutil.CreateTestAccount(t, container.DB, orgID, ledgerID, nil, "Deleted Account", deletedAlias, "USD", &deletedAt)
+
+	ctx := context.Background()
+
+	// Act
+	existingAliases, err := repo.FindByAliases(ctx, orgID, ledgerID, []string{activeAlias, deletedAlias})
+
+	// Assert
+	require.NoError(t, err, "FindByAliases should not return error")
+	assert.Len(t, existingAliases, 1, "should only return active alias")
+	assert.Contains(t, existingAliases, activeAlias)
+	assert.NotContains(t, existingAliases, deletedAlias, "soft-deleted alias should be available for reuse")
+}
+
+func TestIntegration_AccountRepository_FindByAliases_EmptySlice(t *testing.T) {
+	// Arrange
+	container := pgtestutil.SetupContainer(t)
+
+	repo := createRepository(t, container)
+
+	orgID := pgtestutil.CreateTestOrganization(t, container.DB)
+	ledgerID := pgtestutil.CreateTestLedger(t, container.DB, orgID)
+
+	ctx := context.Background()
+
+	// Act
+	existingAliases, err := repo.FindByAliases(ctx, orgID, ledgerID, []string{})
+
+	// Assert
+	require.NoError(t, err, "FindByAliases with empty slice should not error")
+	assert.Empty(t, existingAliases, "should return empty slice")
+}
+
+func TestIntegration_AccountRepository_FindByAliases_IsolatesByOrgLedger(t *testing.T) {
+	// Arrange
+	container := pgtestutil.SetupContainer(t)
+
+	repo := createRepository(t, container)
+
+	org1ID := pgtestutil.CreateTestOrganization(t, container.DB)
+	ledger1ID := pgtestutil.CreateTestLedger(t, container.DB, org1ID)
+
+	org2ID := pgtestutil.CreateTestOrganization(t, container.DB)
+	ledger2ID := pgtestutil.CreateTestLedger(t, container.DB, org2ID)
+
+	// Create account with alias in org1
+	sharedAlias := "@sharedaliasname"
+	pgtestutil.CreateTestAccount(t, container.DB, org1ID, ledger1ID, nil, "Org1 Account", sharedAlias, "USD", nil)
+
+	ctx := context.Background()
+
+	// Act - Check alias in org1 (should exist)
+	existingInOrg1, err := repo.FindByAliases(ctx, org1ID, ledger1ID, []string{sharedAlias})
+	require.NoError(t, err)
+	assert.Len(t, existingInOrg1, 1, "alias should exist in org1")
+
+	// Act - Check alias in org2 (should not exist - different org/ledger)
+	existingInOrg2, err := repo.FindByAliases(ctx, org2ID, ledger2ID, []string{sharedAlias})
+	require.NoError(t, err)
+	assert.Empty(t, existingInOrg2, "alias should not exist in org2 (isolation)")
 }
