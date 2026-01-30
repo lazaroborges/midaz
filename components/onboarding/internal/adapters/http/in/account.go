@@ -141,9 +141,14 @@ func (handler *AccountHandler) CreateAccountsBatch(i any, c *fiber.Ctx) error {
 
 	logger.Infof("Batch account creation completed: %d succeeded, %d failed", response.SuccessCount, response.FailureCount)
 
-	// Return 201 if all succeeded, 207 if partial success
+	// Return 201 if all succeeded, 207 if partial success, 500 if all failed
 	if response.FailureCount > 0 {
-		return http.MultiStatus(c, response)
+		if response.SuccessCount > 0 {
+			// Mixed outcomes: some succeeded, some failed
+			return http.MultiStatus(c, response)
+		}
+		// All failed: return error status
+		return http.JSONResponse(c, 500, response)
 	}
 
 	return http.Created(c, response)
